@@ -79,6 +79,8 @@ class AgentOpsBarWindow:
         self._initial_balance: float | None = None
         self._snapshot: dict[str, Any] | None = None
         self._last_error: str | None = None
+        self._last_height: int | None = None
+        self._live_updaters: list[Any] = []
         self._drag_x = 0
         self._drag_y = 0
 
@@ -225,6 +227,9 @@ class AgentOpsBarWindow:
     def _fit_height(self) -> None:
         self.root.update_idletasks()
         h = self.outer.winfo_reqheight() + 2
+        if h == self._last_height:
+            return
+        self._last_height = h
         x, y = self.root.winfo_x(), self.root.winfo_y()
         self.root.geometry(f"{self.width}x{h}+{x}+{y}")
 
@@ -251,7 +256,8 @@ class AgentOpsBarWindow:
 
     def _schedule_tick(self) -> None:
         if not self.collapsed and self._snapshot and self.active_tab in ("colab", "agents"):
-            self._render_active_panel()
+            for updater in self._live_updaters:
+                updater()
         self.root.after(TICK_INTERVAL_MS, self._schedule_tick)
 
     def refresh_async(self, *, fast: bool = True) -> None:
@@ -351,6 +357,7 @@ class AgentOpsBarWindow:
     # ------------------------------------------------------------------
 
     def _clear_body(self) -> None:
+        self._live_updaters.clear()
         for child in self.body.winfo_children():
             child.destroy()
 
@@ -476,14 +483,23 @@ class AgentOpsBarWindow:
                 if n_slots > 0:
                     proj_str = ", ".join(projects) if projects else f"{n_slots} 槽占用中"
                     sub_txt, sub_fg = f"运行中: {truncate_text(proj_str, 42)}", ACCENT
+                    tk.Label(nc, text=sub_txt, fg=sub_fg, bg=CARD_BG, font=FONT_UI_SM, anchor="w").pack(fill="x")
                 else:
                     anchor = float(node.get("last_used_at") or node.get("created_at") or now)
                     remain = max(0.0, idle_timeout - max(0.0, now - anchor))
-                    if remain > 0:
-                        sub_txt, sub_fg = f"空闲 {format_duration(remain)} 后自动回收", MUTED
-                    else:
-                        sub_txt, sub_fg = "已达空闲阈值 · 等待回收", AMBER
-                tk.Label(nc, text=sub_txt, fg=sub_fg, bg=CARD_BG, font=FONT_UI_SM, anchor="w").pack(fill="x")
+                    sub_txt = f"空闲 {format_duration(remain)} 后自动回收" if remain > 0 else "已达空闲阈值 · 等待回收"
+                    sub_fg = MUTED if remain > 0 else AMBER
+                    sub_lbl = tk.Label(nc, text=sub_txt, fg=sub_fg, bg=CARD_BG, font=FONT_UI_SM, anchor="w")
+                    sub_lbl.pack(fill="x")
+
+                    def _update_idle(lbl: tk.Label = sub_lbl, anc: float = anchor, tout: float = idle_timeout) -> None:
+                        rem = max(0.0, tout - max(0.0, time.time() - anc))
+                        lbl.configure(
+                            text=f"空闲 {format_duration(rem)} 后自动回收" if rem > 0 else "已达空闲阈值 · 等待回收",
+                            fg=MUTED if rem > 0 else AMBER,
+                        )
+
+                    self._live_updaters.append(_update_idle)
 
         accounts = colab.get("accounts") or []
         if accounts:
